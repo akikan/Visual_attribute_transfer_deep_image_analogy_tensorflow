@@ -1,4 +1,4 @@
-# MSbot
+# Visual Attribute Transfer through Deep Image Analogy tensorflow
 Visual Attribute Transfer through Deep Image Analogyを実装してtwitter botにしたものです。
 
 # 前提環境
