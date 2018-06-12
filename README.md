@@ -24,6 +24,9 @@ ret = VAT.run(pathes)  # ここで変換
 ```
 これでおそらく同じディレクトリに変換後の画像が2枚できます。
 
+# 作成画像例
+![sample](https://github.com/akikan/Visual_attribute_transfer_deep_image_analogy_tensorflow/blob/master/sample.png "sample")
+
 ## GPUを使えない環境な場合
 1回の使用5時間ぐらいかかる可能性があります。
 
