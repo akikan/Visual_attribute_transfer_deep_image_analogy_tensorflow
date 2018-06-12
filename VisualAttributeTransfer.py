@@ -14,7 +14,7 @@ import random
 from joblib import Parallel, delayed
 import numba
 from tqdm import tqdm
-
+import patchmatch as PM
 
 def _weights(layer, expected_layer_name, vgg_layers):
     """
@@ -62,57 +62,7 @@ def load_vgg_model(path):
     IMAGE_WIDTH = 224
     IMAGE_HEIGHT = 224
     COLOR_CHANNELS = 3
-    """
-    Returns a model for the purpose of 'painting' the picture.
-    Takes only the convolution layer weights and wrap using the TensorFlow
-    Conv2d, Relu and AveragePooling layer. VGG actually uses maxpool but
-    the paper indicates that using AveragePooling yields better results.
-    The last few fully connected layers are not used.
-    Here is the detailed configuration of the VGG model:
-        0 is conv1_1 (3, 3, 3, 64)
-        1 is relu
-        2 is conv1_2 (3, 3, 64, 64)
-        3 is relu    
-        4 is maxpool
-        5 is conv2_1 (3, 3, 64, 128)
-        6 is relu
-        7 is conv2_2 (3, 3, 128, 128)
-        8 is relu
-        9 is maxpool
-        10 is conv3_1 (3, 3, 128, 256)
-        11 is relu
-        12 is conv3_2 (3, 3, 256, 256)
-        13 is relu
-        14 is conv3_3 (3, 3, 256, 256)
-        15 is relu
-        16 is conv3_4 (3, 3, 256, 256)
-        17 is relu
-        18 is maxpool
-        19 is conv4_1 (3, 3, 256, 512)
-        20 is relu
-        21 is conv4_2 (3, 3, 512, 512)
-        22 is relu
-        23 is conv4_3 (3, 3, 512, 512)
-        24 is relu
-        25 is conv4_4 (3, 3, 512, 512)
-        26 is relu
-        27 is maxpool
-        28 is conv5_1 (3, 3, 512, 512)
-        29 is relu
-        30 is conv5_2 (3, 3, 512, 512)
-        31 is relu
-        32 is conv5_3 (3, 3, 512, 512)
-        33 is relu
-        34 is conv5_4 (3, 3, 512, 512)
-        35 is relu
-        36 is maxpool
-        37 is fullyconnected (7, 7, 512, 4096)
-        38 is relu
-        39 is fullyconnected (1, 1, 4096, 4096)
-        40 is relu
-        41 is fullyconnected (1, 1, 4096, 1000)
-        42 is softmax
-    """
+
     vgg = scipy.io.loadmat(path)
 
     vgg_layers = vgg['layers']
@@ -142,214 +92,7 @@ def load_vgg_model(path):
     graph['conv5_4']  = _conv2d_relu(graph['conv5_3'], 34, 'conv5_4', vgg_layers)
     graph['avgpool5'] = _avgpool(graph['conv5_4'])
     return graph
-# def createImage(tensor):
-#     newImage = np.zeros((len(tensor[0]),len(tensor[0][0]),3))
-#     for  z in range(len(tensor[0][0][0])):
-#         for y in range(len(tensor[0])):
-#           for x in range(len(tensor[0][y])):
-#             newImage[y][x][0] = tensor[0][y][x][z]
-#             newImage[y][x][1] = tensor[0][y][x][z]
-#             newImage[y][x][2] = tensor[0][y][x][z]
-#         newImage = np.asarray(newImage).astype('float64')
-#         newImage += MEAN_VALUES[0]
-#         newImage = newImage[:, :, ::-1]
-#         newImage = np.clip(newImage, 0, 255).astype('uint8')
-#     print(newImage.shape)
-#     return newImage
 
-def getNormalizedFx(Fx,y,x):
-    vector = Fx[0][y][x]
-    return vector/norms(vector)
-
-
-def getPatchPosition(image, imY, imX, patch,height,width):
-    # height = len(image)
-    # width = len(image[0])
-    points=[]
-    len_mx1 = -int(patch[0]/2)
-    len_px1 = int(patch[0]/2)+1
-    len_mx2 = -int(patch[1]/2)
-    len_px2 = int(patch[1]/2)+1
-    for x in range(len_mx1,len_px1):
-        tempX = imX+x
-        for y in range(len_mx2,len_px2):
-            if 0 <= tempX < width and 0<= imY+y < height:
-                points.append([imY+y,tempX])
-            else:
-                points.append([-1,-1])
-    # points = [[imY+y,imX+x] if 0<=imX+x<width and 0<=imY+y<height else [-1,-1] for y in range(len_mx2,len_px2) for x in range(len_mx1, len_px1)]
-    return points
-
-#指定された位置の半径(randomwalkarea)分の有効な座標を返す
-def getSearchList(image, imY, imX, randomWalkArea,height,width):
-    # height = len(image)
-    # width = len(image[0])
-    points=[]
-    len_mx1 = -int(randomWalkArea[0]/2)
-    len_px1 = int(randomWalkArea[0]/2)+1
-    len_mx2 = -int(randomWalkArea[1]/2)
-    len_px2 = int(randomWalkArea[1]/2)+1
-    for x in range(len_mx1,len_px1):
-        tempX = imX+x
-        for y in range(len_mx2,len_px2):
-            if 0 <= tempX < width and 0<= imY+y < height:
-                points.append([imY+y,tempX])
-    # points = [[imY+y,imX+x] for y in range(len_mx2,len_px2) for x in range(len_mx1, len_px1) if 0<=imX+x<width and 0<=imY+y<height]
-    map(int,points)
-    return points
-
-
-
-@numba.jit
-def norms(vector):
-    return np.sqrt(np.dot(vector,vector))
-
-#patchmatchで用いるエネルギー関数を出力する
-def getDistance(A,ANormlizeMap,AdashNormlizedMap,By,Bx,BNormlizedMap,BdashNormlizedMap,patch,height,width):
-    B = getPatchPosition(BNormlizedMap,By,Bx,patch,height,width)
-    sumationA = 0
-    sumationB = 0
-    length = len(A)
-    count=0
-    for i in range(length):
-        addressAY = A[i][0]
-        addressAX = A[i][1]
-        addressBY = B[i][0]
-        addressBX = B[i][1]
-        tempA=0
-        tempB=0
-
-        if addressAX!=-1 and addressBX!=-1:
-            tempA = (ANormlizeMap[addressAY][addressAX] -BNormlizedMap[addressBY][addressBX])
-                                   
-            tempB =  (AdashNormlizedMap[addressAY][addressAX] -BdashNormlizedMap[addressBY][addressBX])
-            count+=1
-
-        sumationA += np.dot(tempA,tempA)
-        sumationB += np.dot(tempB,tempB)
-    return (sumationA+sumationB)/float(count)
-
-@numba.jit
-def getNormlizedMap(imgA, imgAdash, imgB, imgBdash, patch, Phi):
-    lengthY = len(imgA[0])
-    lengthX = len(imgA[0][0])
-    lengthZ = len(imgA[0][0][0])
-    ANormlizeMap=np.zeros((lengthY,lengthX,lengthZ))
-    AdashNormlizedMap=np.zeros((lengthY,lengthX,lengthZ))
-    BNormlizedMap=np.zeros((lengthY,lengthX,lengthZ))
-    BdashNormlizedMap=np.zeros((lengthY,lengthX,lengthZ))
-
-    for y in range(lengthY):
-        for x in range(lengthX):
-            ANormlizeMap[y][x]     = getNormalizedFx(imgA,y,x)
-            AdashNormlizedMap[y][x]= getNormalizedFx(imgAdash,y,x)
-            BNormlizedMap[y][x]    = getNormalizedFx(imgB, y,x)
-            BdashNormlizedMap[y][x]= getNormalizedFx(imgBdash,y,x)
-
-    return ANormlizeMap, AdashNormlizedMap, BNormlizedMap, BdashNormlizedMap
-
-
-#指定された位置の半径(randomwalkarea)分の有効な座標を返す
-def getSearchPosition(image, imY, imX, randomWalkArea,height,width):
-    len_mx1 = -int(randomWalkArea[0]/2)
-    len_px1 = int(randomWalkArea[0]/2)+1
-    len_mx2 = -int(randomWalkArea[1]/2)
-    len_px2 = int(randomWalkArea[1]/2)+1
-    
-#     serchX =  random.choice(list(range(max(imX+len_mx1, 0),min(imX+len_px1,height))))
-#     serchY =  random.choice(list(range(max(imY+len_mx2, 0),min(imY+len_px2,width ))))
-    serchX =  np.random.randint(max(imX+len_mx1, 0),min(imX+len_px1,height))
-    serchY =  np.random.randint(max(imY+len_mx2, 0),min(imY+len_px2,width ))
-    return [int(serchY),int(serchX)]
-
-
-def randomSearch(A, ANormlizeMap, AdashNormlizedMap, imY, imX, BNormlizedMap, BdashNormlizedMap, randomWalkArea, patch, height, width):
-    minimum = getDistance(A, ANormlizeMap, AdashNormlizedMap, imY, imX, BNormlizedMap, BdashNormlizedMap, patch, height, width)
-
-    saveY=imY
-    saveX=imX
-    maxHeight= randomWalkArea[0]
-    maxWidth = randomWalkArea[1]
-
-    while maxHeight > 1:
-#         searchList = getSearchList(BNormlizedMap, imY, imX, [maxHeight, maxWidth], height, width)
-        points=getSearchPosition(BNormlizedMap, imY, imX, [maxHeight, maxWidth], height, width)
-#         searchList = getDiffSearchList(BNormlizedMap, imY, imX, [maxHeight, maxWidth], [maxHeight//2, maxWidth//2], height, width)
-#         if searchList == []:
-#             return [saveY,saveX]
-
-#         for a in range(5):
-#         points = random.choice(searchList)
-
-        tempY = points[0]
-        tempX = points[1]
-
-        dis = getDistance(A, ANormlizeMap, AdashNormlizedMap, tempY, tempX, BNormlizedMap, BdashNormlizedMap, patch, height, width)
-
-        if minimum > dis:
-            minimum = dis
-            saveY = tempY
-            saveX = tempX
-        maxHeight //=2
-        maxWidth  //=2
-    return [saveY,saveX]
-
-@numba.jit
-def patchMatchA(imgA, imgAdash, imgB, imgBdash, randomWalkArea, patch, Phi,i):
-    height=len(imgA[0])
-    width =len(imgA[0][0])
-    ANormlizeMap, AdashNormlizedMap, BNormlizedMap, BdashNormlizedMap = getNormlizedMap(imgA, imgAdash, imgB, imgBdash, patch, Phi)
-    
-    ret = np.zeros_like(Phi)
-    
-
-    for y in tqdm(range(height)):
-        for x in range(width):
-            positionList=[Phi[y][x]]
-            minimum = 100000
-
-            if y>0:
-                positionList.append(Phi[y-1][x])
-            if x>0:
-                positionList.append(Phi[y][x-1])
-            saveX=x
-            saveY=y
-            
-            tempY=0
-            tempX=0
-            A = getPatchPosition(ANormlizeMap,y, x, patch,height,width)
-
-            #一番値が近いエリアを探索
-            for i,pos in enumerate(positionList):
-                tempY = int(pos[0])
-                tempX = int(pos[1])
-
-                dis = getDistance(A, ANormlizeMap,AdashNormlizedMap, tempY, tempX, BNormlizedMap,BdashNormlizedMap, patch, height,width)
-                if minimum > dis:
-                    minimum = dis
-                    if i==0:
-                        saveY = tempY
-                        saveX = tempX
-                    elif i==1:
-                        if 0 <= tempY-1 < height:
-                            saveY = tempY-1
-                            saveX = tempX
-                        else:
-                            saveY = tempY
-                            saveX = tempX                            
-                    elif i==2:
-                        if 0 <= tempX-1 < width:
-                            saveY = tempY
-                            saveX = tempX-1
-                        else:
-                            saveY = tempY
-                            saveX = tempX
-            #一番値が近いエリアのみを保存
-            minimum = 100000000
-            ret[y][x]=randomSearch(A, ANormlizeMap, AdashNormlizedMap, saveY,saveX, BNormlizedMap, BdashNormlizedMap, randomWalkArea, patch, height, width)
-
-#             Phi[y][x]=randomSearch(A, ANormlizeMap, AdashNormlizedMap, Phi[saveY][saveX][0],Phi[saveY][saveX][1], BNormlizedMap, BdashNormlizedMap, randomWalkArea, patch, height, width)
-    return ret
 
 
 
@@ -364,27 +107,32 @@ def getPhi_Random(image):
     return randomRet
 
 @numba.jit
-def warp(image,Phi):
+def warp(image,Phi,patch):
     ret = np.zeros_like(image)
     height = len(Phi)
     width = len(Phi[0])
     for y in range(height):
         for x in range(width):
-            newY = int(Phi[y][x][0])
-            newX = int(Phi[y][x][1])
-            ret[0][y][x] = image[0][newY][newX]
+            count=0
+            positions = getPatchPosition(image[0], y, x, patch,height,width)
+            for pos in positions:
+                if pos[0] != -1 or pos[1]!=-1:
+                    count+=1
+                    newY = int(Phi[pos[0]][pos[1]][0])
+                    newX = int(Phi[pos[0]][pos[1]][1])
+                    ret[0][y][x] += image[0][newY][newX]
+            ret[0][y][x] /= float(count)
     return ret
 
 # @numba.jit
-def makeFinImage(img,Phi):
+def makeFinImage(img,Phi,patch):
     temp = np.zeros_like(img[0])
     height = len(img[0])
     width = len(img[0][0])
     for y in range(height):
         for x in range(width):
-            positions = getPatchPosition(img[0], y, x, [5,5],height,width)
-            # for  z in range(channel):
-            count=0
+            positions = getPatchPosition(img[0], y, x, patch,height,width)
+            count=1
             sumX =0
             sumY=0
             R=0
@@ -393,17 +141,11 @@ def makeFinImage(img,Phi):
             for pos in positions:
                 if pos[0] != -1 or pos[1]!=-1:
                     count+=1
-                    sumY += Phi[pos[0]][pos[1]][0]
-                    sumX += Phi[pos[0]][pos[1]][1]
                     R += img[0][int(Phi[pos[0]][pos[1]][0])][int(Phi[pos[0]][pos[1]][1])][0]
                     G += img[0][int(Phi[pos[0]][pos[1]][0])][int(Phi[pos[0]][pos[1]][1])][1]
                     B += img[0][int(Phi[pos[0]][pos[1]][0])][int(Phi[pos[0]][pos[1]][1])][2]
-            sumY /= float(count)
-            sumX /= float(count)
 
-            # test /= 25.0
 
-            temp[y][x] = img[0][int(sumY)][int(sumX)]
             temp[y][x][0] = int(R/float(count))
             temp[y][x][1] = int(G/float(count))
             temp[y][x][2] = int(B/float(count))
@@ -434,6 +176,8 @@ def getWeight(layer,a):
 
 @numba.jit
 def weightBlend(F,W,R):
+    # W = np.clip(np.asarray(W,dtype='float32'),0.0,1.0)
+    # W = W2tensor(W)
     OtherW = 1.0-W
 
     height=len(F[0])
@@ -598,11 +342,8 @@ def getLoss(sess, vggModel, layer, generate_image, goal_image):
 
     sess.run(vggModel['input'].assign(generate_image))
 
-    # return tf.pow(tf.reduce_sum(vggModel['y_'] - vggModel[layer]), 2)
     sub = tf.subtract(vggModel['y_'],vggModel[layer])
     abso= tf.norm(sub)
-    # abso = tf.sqrt(tf.matmul(sub, sub, transpose_b=True))
-    # abso = tf.matrix_determinant(abso)#行列式
     return tf.pow(abso,2)
 
 
@@ -623,7 +364,6 @@ def newDeconv(sess, goal_img, select_optimizer, max_iterations, check_layer, out
     # vggModel['y'] = tf.Variable(tf.constant(goal_img))
     noise = generateNoiseImage(int(len(goal_img[0])*2),int(len(goal_img[0][0])*2),channel)
     noise = np.asarray(noise,dtype=np.float32)
-    # noise -= MEAN_VALUES
     noise -= 127.0
     init_img = np.asarray([noise],dtype=np.float32)
 
@@ -631,7 +371,6 @@ def newDeconv(sess, goal_img, select_optimizer, max_iterations, check_layer, out
     goal_img = np.asarray([goal_img],dtype=np.float32)
 
 
-    # noise -= 127.0#MEAN_VALUES[0]
     vggModel = build_model(noise,int(len(goal_img[0])/2),int(len(goal_img[0][0])/2),channel,layer_num)
     vggModel['y_'] = tf.constant(goal_img)
 
@@ -645,20 +384,7 @@ def newDeconv(sess, goal_img, select_optimizer, max_iterations, check_layer, out
         minimize_with_lbfgs(sess, vggModel, optimizer, init_img, goal_img)
 
     return sess.run(vggModel[output_layer])
-    # output_img = sess.run(vggModel[check_layer])
-    # in_img = sess.run(vggModel[output_layer])
 
-    # print(output_img.shape)
-    # output_img = createImage(output_img)
-    # print(output_img.shape)
-    # output_img = createImage(output_img)# + MEAN_VALUES
-    # output_img = np.clip(output_img,0,255).astype('uint8')
-    # cv2.imshow("L4",output_img)
-    # cv2.waitKey(0)
-    # cv2.imshow("L3_2",createImage(in_img))
-    # cv2.waitKey(0)
-    # cv2.imshow("input",createImage(sess.run(vggModel['input'])))
-    # cv2.waitKey(0)
 
 def generateNoiseImage(height, width, channel):
     randomByteArray = bytearray(os.urandom(height*width*channel)) #画素数文の乱数発生
@@ -685,23 +411,14 @@ def upsampling(Phi):
     return np.asarray(ret)
 
 
-@numba.jit
-def Phi2Image(Phi):
-    ret = np.zeros((len(Phi),len(Phi[0]),3))
-    for y in range(len(Phi)):
-        for x in range(len(Phi[y])):
-            ret[y][x] = [Phi[y][x][1],0,Phi[y][x][0]]
-    ret = 255*ret/np.max(ret)
-    ret = np.clip(ret,0,255)
-    ret = np.asarray(ret,dtype='uint8')
-    return ret
+
+
 
 def run(pathes):
     if len(pathes)!=2:
         return []
-    # MEAN_VALUES = np.array([123.68, 116.779, 103.939]).reshape((1,1,1,3))
     MEAN_VALUES = np.array([103.939, 116.779, 123.68]).reshape((1,1,1,3))
-    
+
 
     VGG_MODEL = 'imagenet-vgg-verydeep-19.mat'
     sess = tf.InteractiveSession()
@@ -711,7 +428,6 @@ def run(pathes):
     imgA = cv2.resize(cv2.imread(pathes[0]), (224,224))
     img = np.asarray([imgA]).astype('float64')
     img -= MEAN_VALUES
-
 
     sess.run(model['input'].assign(np.asarray(img)))
     A=[]
@@ -725,6 +441,7 @@ def run(pathes):
     img = np.asarray([imgB]).astype('float64')
     img -= MEAN_VALUES
 
+
     sess.run(model['input'].assign(np.asarray(img)))
     B=[]
     B.append(sess.run(model['conv1_1']))
@@ -733,6 +450,7 @@ def run(pathes):
     B.append(sess.run(model['conv4_1']))
     B.append(sess.run(model['conv5_1']))
     
+
     a = [0.8, 0.7, 0.6, 0.1]
     channel=[256,128,64,3]
     check_layers=['conv5_1','conv4_1','conv3_1','conv2_1','conv1_1']
@@ -749,25 +467,28 @@ def run(pathes):
         print("PhiAB:{0}".format(PhiAB.shape))
         print("PhiBA:{0}".format(PhiBA.shape))
         if i==0:
+
             for aaa in range(iterr):
-                PhiAB = patchMatchA(A[5-1-i], A[5-1-i], B[5-1-i],B[5-1-i],  randomWalkArea[5-1-i], patch[5-1-i], PhiAB,i)
-                PhiBA = patchMatchA(B[5-1-i], B[5-1-i], A[5-1-i],A[5-1-i],  randomWalkArea[5-1-i], patch[5-1-i], PhiBA,i)
+                PhiAB = PM.patchMatchA(A[5-1-i], A[5-1-i], B[5-1-i],B[5-1-i],  randomWalkArea[5-1-i], patch[5-1-i], PhiAB,i)
+            for aaa in range(iterr):
+                PhiBA = PM.patchMatchA(B[5-1-i], B[5-1-i], A[5-1-i],A[5-1-i],  randomWalkArea[5-1-i], patch[5-1-i], PhiBA,i)
         else:
             for aaa in range(iterr):
-                PhiAB = patchMatchA(A[5-1-i], FAdash, FB, B[5-1-i], randomWalkArea[5-1-i], patch[5-1-i], PhiAB,i)
-                PhiBA = patchMatchA(FB, B[5-1-i], A[5-1-i], FAdash, randomWalkArea[5-1-i], patch[5-1-i], PhiBA,i)
+                PhiAB = PM.patchMatchA(A[5-1-i], FAdash, FB, B[5-1-i], randomWalkArea[5-1-i], patch[5-1-i], PhiAB,i)
+                PhiBA = PM.patchMatchA(FB, B[5-1-i], A[5-1-i], FAdash, randomWalkArea[5-1-i], patch[5-1-i], PhiBA,i)
 
 
         if i<4:
-            Adash = warp(A[5-1-i],PhiBA)
-            Bdash = warp(B[5-1-i],PhiAB)
+            Adash = warp(A[5-1-i],PhiBA,patch[5-1-i])
+            Bdash = warp(B[5-1-i],PhiAB,patch[5-1-i])
+            # Adash = makeFinImage(A[5-1-i],PhiBA,patch[5-1-i])
+            # Bdash = makeFinImage(B[5-1-i],PhiAB,patch[5-1-i])
 
             RA    = newDeconv(sess, Adash, 'adam', 1001, check_layers[i], check_layers[i+1], 5-1-i,channel[i]) 
             RB    = newDeconv(sess, Bdash, 'adam', 1001, check_layers[i], check_layers[i+1], 5-1-i,channel[i]) 
 
             WA    = getWeight(A[5-2-i],a[i])
             WB    = getWeight(B[5-2-i],a[i])
-
 
             print("RB:{0}".format(RB.shape))
             print("A:{0}".format(A[5-2-i].shape))
@@ -782,8 +503,8 @@ def run(pathes):
         cv2.imwrite("B"+str(i)+".jpg",createImage(B[5-1-i]))
         cv2.imwrite("warpA"+str(i)+".jpg",createImage(Adash))
         cv2.imwrite("warpB"+str(i)+".jpg",createImage(Bdash))
-        cv2.imwrite("PhiA"+str(i)+".jpg",Phi2Image(PhiAB))
-        cv2.imwrite("PhiB"+str(i)+".jpg",Phi2Image(PhiBA)) 
+        cv2.imwrite("PhiA"+str(i)+".jpg",PM.Phi2Image(PhiAB))
+        cv2.imwrite("PhiB"+str(i)+".jpg",PM.Phi2Image(PhiBA)) 
         cv2.imwrite("RA"+str(i)+".jpg",createImage(RA))
         cv2.imwrite("RB"+str(i)+".jpg",createImage(RB)) 
         cv2.imwrite("WA"+str(i)+".jpg",WA*255)
@@ -791,16 +512,12 @@ def run(pathes):
         cv2.imwrite("FAdash"+str(i)+".jpg",createImage(FAdash))
         cv2.imwrite("FB"+str(i)+".jpg",createImage(FB)) 
 
-    # tempA = warp(np.asarray([imgA]),PhiBA)  
-    # tempB = warp(np.asarray([imgB]),PhiAB)
-    A=makeFinImage(np.asarray([imgB]), PhiAB)
-    B=makeFinImage(np.asarray([imgA]), PhiBA)
+    A=makeFinImage(np.asarray([imgB]), PhiAB, [5,5])
+    B=makeFinImage(np.asarray([imgA]), PhiBA, [5,5])
     cv2.imwrite("A.jpg",A)
     cv2.imwrite("B.jpg",B) 
- 
-
 
     sess.close()
     return ["A.jpg","B.jpg"]
 
-run(["DL8BXuOUMAAkhYn.jpg","DL8BYrRVAAALZvz.jpg"])
+# run(["ava.jpg","mona.jpg"])
