@@ -3,11 +3,39 @@ import numpy as np
 import cv2
 from tqdm import tqdm
 import numba
+import multiprocessing
+from joblib import Parallel, delayed
 
 def getNormalizedFx(Fx,y,x):
     vector = Fx[0][y][x]
     return vector/norms(vector)
 
+def makeFinImage(img,Phi,patch):
+    temp = np.zeros_like(img[0])
+    height = len(img[0])
+    width = len(img[0][0])
+    for y in range(height):
+        for x in range(width):
+            positions = getPatchPosition(img[0], y, x, patch,height,width)
+            count=0
+            sumX =0
+            sumY=0
+            R=0
+            G=0
+            B=0
+            for pos in positions:
+                if pos[0] != -1 or pos[1]!=-1:
+                    count+=1
+                    R += img[0][int(Phi[pos[0]][pos[1]][0])][int(Phi[pos[0]][pos[1]][1])][0]
+                    G += img[0][int(Phi[pos[0]][pos[1]][0])][int(Phi[pos[0]][pos[1]][1])][1]
+                    B += img[0][int(Phi[pos[0]][pos[1]][0])][int(Phi[pos[0]][pos[1]][1])][2]
+
+
+            temp[y][x][0] = int(R/float(count))
+            temp[y][x][1] = int(G/float(count))
+            temp[y][x][2] = int(B/float(count))
+
+    return temp
 
 def getPatchPosition(image, imY, imX, patch,height,width):
     points=[]
@@ -24,7 +52,17 @@ def getPatchPosition(image, imY, imX, patch,height,width):
                 points.append([-1,-1])
     return points
 
-
+@numba.jit
+def warp(image,Phi,patch):
+    ret = np.zeros_like(image)
+    height = len(Phi)
+    width = len(Phi[0])
+    for y in range(height):
+        for x in range(width):
+            newY = int(Phi[y][x][0])
+            newX = int(Phi[y][x][1])
+            ret[0][y][x] += image[0][newY][newX]
+    return ret
 
 @numba.jit
 def norms(vector):
@@ -56,22 +94,11 @@ def getDistance(A,ANormlizeMap,AdashNormlizedMap,By,Bx,BNormlizedMap,BdashNormli
     return (sumationA+sumationB)/float(count)
 
 @numba.jit
-def getNormlizedMap(imgA, imgAdash, imgB, imgBdash, patch, Phi):
-    lengthY = len(imgA[0])
-    lengthX = len(imgA[0][0])
-    lengthZ = len(imgA[0][0][0])
-    ANormlizeMap=np.zeros((lengthY,lengthX,lengthZ))
-    AdashNormlizedMap=np.zeros((lengthY,lengthX,lengthZ))
-    BNormlizedMap=np.zeros((lengthY,lengthX,lengthZ))
-    BdashNormlizedMap=np.zeros((lengthY,lengthX,lengthZ))
-
-    for y in range(lengthY):
-        for x in range(lengthX):
-            ANormlizeMap[y][x]     = getNormalizedFx(imgA,y,x)
-            AdashNormlizedMap[y][x]= getNormalizedFx(imgAdash,y,x)
-            BNormlizedMap[y][x]    = getNormalizedFx(imgB, y,x)
-            BdashNormlizedMap[y][x]= getNormalizedFx(imgBdash,y,x)
-
+def getNormlizedMap(imgA, imgAdash, imgB, imgBdash):
+    ANormlizeMap=imgA[0]/np.linalg.norm(imgA[0],ord=2,axis=(2),keepdims=True)
+    AdashNormlizedMap=imgAdash[0]/np.linalg.norm(imgAdash[0],ord=2,axis=(2),keepdims=True)
+    BNormlizedMap=imgB[0]/np.linalg.norm(imgB[0],ord=2,axis=(2),keepdims=True)
+    BdashNormlizedMap=imgBdash[0]/np.linalg.norm(imgBdash[0],ord=2,axis=(2),keepdims=True)
     return ANormlizeMap, AdashNormlizedMap, BNormlizedMap, BdashNormlizedMap
 
 
@@ -111,20 +138,20 @@ def randomSearch(A, ANormlizeMap, AdashNormlizedMap, imY, imX, BNormlizedMap, Bd
         maxWidth  //=2
     return [saveY,saveX]
 
-@numba.jit
+# @numba.jit
 def patchMatchA(imgA, imgAdash, imgB, imgBdash, randomWalkArea, patch, Phi,i):
     height=len(imgA[0])
     width =len(imgA[0][0])
-    ANormlizeMap, AdashNormlizedMap, BNormlizedMap, BdashNormlizedMap = getNormlizedMap(imgA, imgAdash, imgB, imgBdash, patch, Phi)
+    ANormlizeMap, AdashNormlizedMap, BNormlizedMap, BdashNormlizedMap = getNormlizedMap(imgA, imgAdash, imgB, imgBdash)
     
     ret = np.zeros_like(Phi)
     
-
     for y in tqdm(range(height)):
         for x in range(width):
             positionList=[Phi[y][x]]
             minimum = 100000
-            arcs=[16,8,4,2,1]
+            arcs=[1]
+            # arcs=[16,8,4,2,1]
             for arc in arcs:
                 if y-arc>=0:#up
                     positionList.append(Phi[y-arc][x])
@@ -157,7 +184,6 @@ def patchMatchA(imgA, imgAdash, imgB, imgBdash, randomWalkArea, patch, Phi,i):
             minimum = 100000000
 
             ret[y][x]=randomSearch(A, ANormlizeMap, AdashNormlizedMap, saveY,saveX, BNormlizedMap, BdashNormlizedMap, randomWalkArea, patch, height, width)
-#             Phi[y][x]=randomSearch(A, ANormlizeMap, AdashNormlizedMap, Phi[saveY][saveX][0],Phi[saveY][saveX][1], BNormlizedMap, BdashNormlizedMap, randomWalkArea, patch, height, width)
     return ret
 
 @numba.jit
@@ -170,4 +196,3 @@ def Phi2Image(Phi):
     ret = np.clip(ret,0,255)
     ret = np.asarray(ret,dtype='uint8')
     return ret
-    
