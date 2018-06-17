@@ -106,51 +106,10 @@ def getPhi_Random(image):
     randomRet = np.reshape(ret,(len(image[0]),len(image[0][0]),2))
     return randomRet
 
-@numba.jit
-def warp(image,Phi,patch):
-    ret = np.zeros_like(image)
-    height = len(Phi)
-    width = len(Phi[0])
-    for y in range(height):
-        for x in range(width):
-            count=0
-            positions = getPatchPosition(image[0], y, x, patch,height,width)
-            for pos in positions:
-                if pos[0] != -1 or pos[1]!=-1:
-                    count+=1
-                    newY = int(Phi[pos[0]][pos[1]][0])
-                    newX = int(Phi[pos[0]][pos[1]][1])
-                    ret[0][y][x] += image[0][newY][newX]
-            ret[0][y][x] /= float(count)
-    return ret
+
 
 # @numba.jit
-def makeFinImage(img,Phi,patch):
-    temp = np.zeros_like(img[0])
-    height = len(img[0])
-    width = len(img[0][0])
-    for y in range(height):
-        for x in range(width):
-            positions = getPatchPosition(img[0], y, x, patch,height,width)
-            count=1
-            sumX =0
-            sumY=0
-            R=0
-            G=0
-            B=0
-            for pos in positions:
-                if pos[0] != -1 or pos[1]!=-1:
-                    count+=1
-                    R += img[0][int(Phi[pos[0]][pos[1]][0])][int(Phi[pos[0]][pos[1]][1])][0]
-                    G += img[0][int(Phi[pos[0]][pos[1]][0])][int(Phi[pos[0]][pos[1]][1])][1]
-                    B += img[0][int(Phi[pos[0]][pos[1]][0])][int(Phi[pos[0]][pos[1]][1])][2]
 
-
-            temp[y][x][0] = int(R/float(count))
-            temp[y][x][1] = int(G/float(count))
-            temp[y][x][2] = int(B/float(count))
-
-    return temp
 
 
 @numba.jit
@@ -164,7 +123,6 @@ def getWeight(layer,a):
     for y in range(height):
         for x in range(width):
             layerChanged[y][x] = np.dot(layer[0][y][x],layer[0][y][x])
-    layer = W2tensor(layerChanged)
     M = np.zeros((height,width))
 
     for y in range(height):
@@ -189,43 +147,6 @@ def weightBlend(F,W,R):
                 F[0][y][x][z] = F[0][y][x][z]*W[y][x] + R[0][y][x][z]*OtherW[y][x]
     return F
 
-
-def batch_norm_wrapper(inputs, is_training, decay = 0.999):
-        epsilon = 1e-5
-        scale = tf.Variable(tf.ones([inputs.get_shape()[-1]]))
-        beta = tf.Variable(tf.zeros([inputs.get_shape()[-1]]))
-        pop_mean = tf.Variable(tf.zeros([inputs.get_shape()[-1]]), trainable=False)
-        pop_var = tf.Variable(tf.ones([inputs.get_shape()[-1]]), trainable=False)
-        rank = len(inputs.get_shape())
-        axes = []  # nn:[0], conv:[0,1,2]
-        for i in range(rank - 1):
-            axes.append(i)
-        if is_training:
-            batch_mean, batch_var = tf.nn.moments(inputs,axes)
-            train_mean = tf.assign(pop_mean,
-                                   pop_mean * decay + batch_mean * (1 - decay))
-            train_var = tf.assign(pop_var,
-                                  pop_var * decay + batch_var * (1 - decay))
-            with tf.control_dependencies([train_mean, train_var]):
-                return tf.nn.batch_normalization(inputs,
-                    batch_mean, batch_var, beta, scale, epsilon)
-        else:
-            return tf.nn.batch_normalization(inputs,
-                pop_mean, pop_var, beta, scale, epsilon)
-def weight_variable(shape):
-  initial = tf.truncated_normal(shape, stddev=0.1)
-  return tf.Variable(initial)
-
-def bias_variable(shape):
-  initial = tf.constant(0.1, shape=shape)
-  return tf.Variable(initial)
-
-def conv2d(x, W):
-  return tf.nn.conv2d(x, W, strides=[1, 1, 1, 1], padding='SAME')
-
-def max_pool_2x2(x):
-  return tf.nn.max_pool(x, ksize=[1, 2, 2, 1],
-                        strides=[1, 2, 2, 1], padding='SAME')
 def build_model(input_img,IMAGE_WIDTH,IMAGE_HEIGHT,CHANNEL, layer_num):
   def conv_layer(layer_name, layer_input, W):
     conv = tf.nn.conv2d(layer_input, W, strides=[1, 1, 1, 1], padding='SAME')
@@ -470,7 +391,6 @@ def run(pathes):
 
             for aaa in range(iterr):
                 PhiAB = PM.patchMatchA(A[5-1-i], A[5-1-i], B[5-1-i],B[5-1-i],  randomWalkArea[5-1-i], patch[5-1-i], PhiAB,i)
-            for aaa in range(iterr):
                 PhiBA = PM.patchMatchA(B[5-1-i], B[5-1-i], A[5-1-i],A[5-1-i],  randomWalkArea[5-1-i], patch[5-1-i], PhiBA,i)
         else:
             for aaa in range(iterr):
@@ -479,10 +399,8 @@ def run(pathes):
 
 
         if i<4:
-            Adash = warp(A[5-1-i],PhiBA,patch[5-1-i])
-            Bdash = warp(B[5-1-i],PhiAB,patch[5-1-i])
-            # Adash = makeFinImage(A[5-1-i],PhiBA,patch[5-1-i])
-            # Bdash = makeFinImage(B[5-1-i],PhiAB,patch[5-1-i])
+            Adash = PM.warp(A[5-1-i],PhiBA,patch[5-1-i])
+            Bdash = PM.warp(B[5-1-i],PhiAB,patch[5-1-i])
 
             RA    = newDeconv(sess, Adash, 'adam', 1001, check_layers[i], check_layers[i+1], 5-1-i,channel[i]) 
             RB    = newDeconv(sess, Bdash, 'adam', 1001, check_layers[i], check_layers[i+1], 5-1-i,channel[i]) 
@@ -512,12 +430,11 @@ def run(pathes):
         cv2.imwrite("FAdash"+str(i)+".jpg",createImage(FAdash))
         cv2.imwrite("FB"+str(i)+".jpg",createImage(FB)) 
 
-    A=makeFinImage(np.asarray([imgB]), PhiAB, [5,5])
-    B=makeFinImage(np.asarray([imgA]), PhiBA, [5,5])
+    A=PM.makeFinImage(np.asarray([imgB]), PhiAB, [5,5])
+    B=PM.makeFinImage(np.asarray([imgA]), PhiBA, [5,5])
     cv2.imwrite("A.jpg",A)
     cv2.imwrite("B.jpg",B) 
 
     sess.close()
     return ["A.jpg","B.jpg"]
 
-# run(["ava.jpg","mona.jpg"])
